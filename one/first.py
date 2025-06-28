@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
 
 
+
 # 设置中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 使用黑体
 plt.rcParams['axes.unicode_minus'] = False  # 正确显示负号
@@ -35,8 +36,6 @@ df = df.dropna()  # 简单处理：删除含有缺失值的行
 
 # 删除不必要的列（如果有）
 # df = df.drop(['列名1', '列名2'], axis=1)
-
-
 
 # 检查并处理重复值
 df = df.drop_duplicates()
