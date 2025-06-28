@@ -101,6 +101,7 @@ plt.title('实际值 vs 预测值')
 plt.plot([y.min(), y.max()], [y.min(), y.max()], 'k--', lw=2)
 plt.show()
 
+
 # 特征重要性
 coef = pd.Series(lr.coef_, index=X.columns)
 plt.figure(figsize=(10, 6))
