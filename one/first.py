@@ -3,10 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.feature_selection import RFE
 from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import silhouette_score, mean_squared_error, r2_score
+import lightgbm as lgb
+import xgboost as xgb
 
 # 设置中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei']
@@ -24,87 +27,100 @@ print(df.info())
 # 处理缺失值和重复值
 df = df.dropna().drop_duplicates()
 
-# 可视化数值特征的箱线图，检查异常值
-numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
-num_plots = len(numeric_cols)  # 统计数值特征的数量
-n_rows = (num_plots // 3) + (num_plots % 3 > 0)  # 计算行数
-n_cols = 3  # 每行3列
-
-plt.figure(figsize=(15, 5 * n_rows))
-for i, col in enumerate(numeric_cols, 1):
-    plt.subplot(n_rows, n_cols, i)  # 动态创建子图
-    sns.boxplot(x=df[col])
-    plt.title(f'{col} 箱线图')
-plt.tight_layout()
-plt.show()
-
 # 特征编码与标准化
 df = pd.get_dummies(df, drop_first=True)
 scaler = StandardScaler()
 df_scaled = pd.DataFrame(scaler.fit_transform(df.select_dtypes(include=['int64', 'float64'])),
                          columns=df.select_dtypes(include=['int64', 'float64']).columns)
 
-# 可视化特征相关性
-plt.figure(figsize=(12, 8))
-sns.heatmap(df_scaled.corr(), annot=True, cmap='coolwarm')
-plt.title('特征相关性热图')
-plt.show()
-
-# 聚类分析（KMeans & 肘部法则）
-inertia = [KMeans(n_clusters=k, random_state=42).fit(df_scaled).inertia_ for k in range(2, 11)]
-plt.figure(figsize=(10, 6))
-plt.plot(range(2, 11), inertia, marker='o')
-plt.xlabel('聚类数')
-plt.ylabel('惯性')
-plt.title('肘部法则')
-plt.show()
-
-# 聚类结果
-optimal_k = 4
-kmeans = KMeans(n_clusters=optimal_k, random_state=42)
-clusters = kmeans.fit_predict(df_scaled)
-df['Cluster'] = clusters
-
-# 评估聚类效果
-silhouette_avg = silhouette_score(df_scaled, clusters)
-print(f"轮廓系数: {silhouette_avg}")
-
-# 可视化聚类结果
-plt.figure(figsize=(10, 6))
-plt.scatter(df_scaled.iloc[:, 0], df_scaled.iloc[:, 1], c=clusters, cmap='viridis')
-plt.xlabel('特征1')
-plt.ylabel('特征2')
-plt.title('K-Means聚类结果')
-plt.show()
-
-# 线性回归模型
+# 特征和目标分离
 X = df_scaled.drop('popularity', axis=1)
 y = df['popularity']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-lr = LinearRegression()
-lr.fit(X_train, y_train)
-y_pred = lr.predict(X_test)
+# 特征选择 1：SelectKBest
+selector = SelectKBest(f_regression, k=10)
+X_selected_kbest = selector.fit_transform(X, y)
+selected_features_kbest = X.columns[selector.get_support()]
 
-# 模型评估
-mse = mean_squared_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-print(f"均方误差(MSE): {mse}")
-print(f"R平方值: {r2}")
+# 特征选择 2：Recursive Feature Elimination (RFE)
+model = LinearRegression()
+rfe = RFE(model, n_features_to_select=10)
+X_selected_rfe = rfe.fit_transform(X, y)
+selected_features_rfe = X.columns[rfe.support_]
 
-# 预测结果可视化
-plt.figure(figsize=(10, 6))
-plt.scatter(y_test, y_pred)
-plt.xlabel('实际值')
-plt.ylabel('预测值')
-plt.title('实际值 vs 预测值')
-plt.plot([y.min(), y.max()], [y.min(), y.max()], 'k--', lw=2)
-plt.show()
+# 输出被选择的特征
+print(f"通过 SelectKBest 选择的特征：{selected_features_kbest}")
+print(f"通过 RFE 选择的特征：{selected_features_rfe}")
 
+# 准备LGBM模型数据
+X_train_lgb, X_test_lgb, y_train_lgb, y_test_lgb = train_test_split(X_selected_kbest, y, test_size=0.2, random_state=42)
 
-# 特征重要性
-coef = pd.Series(lr.coef_, index=X.columns)
-plt.figure(figsize=(10, 6))
-coef.sort_values(ascending=False).plot(kind='barh')
-plt.title('特征重要性')
-plt.show()
+# LGBM 超参数调优
+lgb_model = lgb.LGBMRegressor()
+param_grid_lgb = {
+    'learning_rate': [0.01, 0.05, 0.1],
+    'num_leaves': [31, 50, 100],
+    'max_depth': [-1, 5, 10],
+    'n_estimators': [50, 100, 200]
+}
+grid_lgb = GridSearchCV(lgb_model, param_grid_lgb, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)
+grid_lgb.fit(X_train_lgb, y_train_lgb)
+
+print("LGBM最佳参数：", grid_lgb.best_params_)
+best_lgb_model = grid_lgb.best_estimator_
+
+# 预测LGBM模型
+y_pred_lgb = best_lgb_model.predict(X_test_lgb)
+
+# LGBM模型评估
+mse_lgb = mean_squared_error(y_test_lgb, y_pred_lgb)
+r2_lgb = r2_score(y_test_lgb, y_pred_lgb)
+print(f"LGBM - 均方误差(MSE): {mse_lgb}")
+print(f"LGBM - R平方值: {r2_lgb}")
+
+# 交叉验证：LGBM模型
+lgb_cv_score = cross_val_score(best_lgb_model, X_selected_kbest, y, cv=5, scoring='neg_mean_squared_error')
+print(f"LGBM - 交叉验证均方误差(MSE): {-lgb_cv_score.mean()}")
+
+# 准备XGBoost模型数据
+X_train_xgb, X_test_xgb, y_train_xgb, y_test_xgb = train_test_split(X_selected_rfe, y, test_size=0.2, random_state=42)
+
+# XGBoost 超参数调优
+xgb_model = xgb.XGBRegressor()
+param_grid_xgb = {
+    'learning_rate': [0.01, 0.05, 0.1],
+    'max_depth': [3, 6, 10],
+    'n_estimators': [50, 100, 200],
+    'subsample': [0.8, 0.9, 1.0]
+}
+grid_xgb = GridSearchCV(xgb_model, param_grid_xgb, cv=5, scoring='neg_mean_squared_error', n_jobs=-1)
+grid_xgb.fit(X_train_xgb, y_train_xgb)
+
+print("XGBoost最佳参数：", grid_xgb.best_params_)
+best_xgb_model = grid_xgb.best_estimator_
+
+# 预测XGBoost模型
+y_pred_xgb = best_xgb_model.predict(X_test_xgb)
+
+# XGBoost模型评估
+mse_xgb = mean_squared_error(y_test_xgb, y_pred_xgb)
+r2_xgb = r2_score(y_test_xgb, y_pred_xgb)
+print(f"XGBoost - 均方误差(MSE): {mse_xgb}")
+print(f"XGBoost - R平方值: {r2_xgb}")
+
+# 交叉验证：XGBoost模型
+xgb_cv_score = cross_val_score(best_xgb_model, X_selected_rfe, y, cv=5, scoring='neg_mean_squared_error')
+print(f"XGBoost - 交叉验证均方误差(MSE): {-xgb_cv_score.mean()}")
+
+# 提供正确和错误样本分析
+correct_samples_lgb = [(y_test_lgb.iloc[i], y_pred_lgb[i]) for i in range(len(y_test_lgb)) if abs(y_test_lgb.iloc[i] - y_pred_lgb[i]) < 0.1]
+incorrect_samples_lgb = [(y_test_lgb.iloc[i], y_pred_lgb[i]) for i in range(len(y_test_lgb)) if abs(y_test_lgb.iloc[i] - y_pred_lgb[i]) >= 0.1]
+
+correct_samples_xgb = [(y_test_xgb.iloc[i], y_pred_xgb[i]) for i in range(len(y_test_xgb)) if abs(y_test_xgb.iloc[i] - y_pred_xgb[i]) < 0.1]
+incorrect_samples_xgb = [(y_test_xgb.iloc[i], y_pred_xgb[i]) for i in range(len(y_test_xgb)) if abs(y_test_xgb.iloc[i] - y_pred_xgb[i]) >= 0.1]
+
+# 显示一些正确样本和错误样本
+print("LGBM 正确样本：", correct_samples_lgb[:2])
+print("LGBM 错误样本：", incorrect_samples_lgb[:2])
+print("XGBoost 正确样本：", correct_samples_xgb[:2])
+print("XGBoost 错误样本：", incorrect_samples_xgb[:2])
